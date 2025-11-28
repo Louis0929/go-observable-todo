@@ -93,11 +93,22 @@ func main() {
 	router := gin.Default()
 	router.Use(otelgin.Middleware("go-observable-todo"))
 
-	// TODO: Step 4 - Define your API routes
-	// Create a POST /todos route that calls handlers.CreateTodo(db, logger)
-	// Create a GET /todos route that calls handlers.GetTodos(db, logger)
-	router.POST("/todos", handlers.CreateTodo(db, logger))
-	router.GET("/todos", handlers.GetTodos(db, logger))
+	// ==========================================================
+	// Step 4: 使用新的 Handler Struct 和 API Grouping
+	// ==========================================================
+	
+	// 1. 初始化 Handler (依賴注入)
+	todoHandler := handlers.NewTodoHandler(db, logger)
+
+	// 2. 創建 API v1 Group
+	v1 := router.Group("/api/v1")
+	{
+		// 3. 註冊路由
+		v1.POST("/todos", todoHandler.Create)
+		v1.GET("/todos", todoHandler.GetList)
+	}
+
+	// ==========================================================
 
 	// TODO: Step 4.5 - Add Prometheus metrics endpoint
 	// Add a GET /metrics route that exposes Prometheus metrics

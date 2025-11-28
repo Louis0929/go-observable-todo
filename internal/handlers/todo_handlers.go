@@ -1,10 +1,5 @@
 package handlers
 
-// TODO: Import the necessary packages:
-// - "net/http" (for HTTP status codes)
-// - "github.com/gin-gonic/gin"
-// - "gorm.io/gorm"
-// - "github.com/your-username/go-observable-todo/internal/models"
 import (
 	"net/http"
 
@@ -14,69 +9,70 @@ import (
 	"gorm.io/gorm"
 )
 
-// TODO: Modify CreateTodo function signature to accept logger
-// Change from: func CreateTodo(db *gorm.DB) gin.HandlerFunc
-// Change to:   func CreateTodo(db *gorm.DB, logger *zap.Logger) gin.HandlerFunc
-// TODO: Add structured logging in CreateTodo:
-// - Log when starting to create todo: logger.Info("Creating new todo", zap.String("title", todo.Title))
-// - Log when creation fails: logger.Error("Failed to create todo", zap.Error(err))
-// - Log when creation succeeds: logger.Info("Successfully created todo", zap.Int("id", todo.ID))
+// TodoHandler 是一個結構體，用來持有 Handler 所需的依賴 (Dependencies)
+// 這就是 "Dependency Injection" 的容器
+type TodoHandler struct {
+	DB     *gorm.DB
+	Logger *zap.Logger
+}
 
-// This function should:
-//  1. Return a gin.HandlerFunc (which is: func(c *gin.Context))
-//  2. Inside the returned function:
-//     a. Declare a variable to hold the todo (var todo models.Todo)
-//     b. Use c.ShouldBindJSON(&todo) to parse the request body
-//     - If error: return JSON with http.StatusBadRequest and error message
-//     c. Use db.Create(&todo) to save to database
-//     - If error: return JSON with http.StatusInternalServerError
-//     d. If successful: return JSON with http.StatusCreated and the created todo
-//
-// Hint: Return JSON using: c.JSON(statusCode, data)
-// Hint: For error messages use: gin.H{"error": "message"}
-func CreateTodo(db *gorm.DB, Logger *zap.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		Logger.Info("Starting create new todo")
-		var todo models.Todo
-		if err := c.ShouldBindJSON(&todo); err != nil {
-			Logger.Error("Failed to parse JSON", zap.Error(err))
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		if err := db.Create(&todo).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create todo"})
-		}
-
-		c.JSON(http.StatusCreated, todo)
-		Logger.Info("Successfully parsed todo from JSON", zap.String("title", todo.Title))
+// NewTodoHandler 是一個構造函數 (Constructor)
+// 用來創建一個 TodoHandler 實例
+func NewTodoHandler(db *gorm.DB, logger *zap.Logger) *TodoHandler {
+	return &TodoHandler{
+		DB:     db,
+		Logger: logger,
 	}
 }
 
-// TODO: Modify GetTodos function signature to accept logger
-// Change from: func GetTodos(db *gorm.DB) gin.HandlerFunc
-// Change to:   func GetTodos(db *gorm.DB, logger *zap.Logger) gin.HandlerFunc
-// TODO: Add structured logging in GetTodos:
-// - Log when starting to fetch todos: logger.Info("Fetching all todos")
-// - Log when fetch fails: logger.Error("Failed to fetch todos", zap.Error(err))
-// - Log when fetch succeeds: logger.Info("Successfully fetched todos", zap.Int("count", len(todos)))
-// This function should:
-//  1. Return a gin.HandlerFunc
-//  2. Inside the returned function:
-//     a. Declare a slice to hold todos (var todos []models.Todo)
-//     b. Use db.Find(&todos) to fetch all todos
-//     - If error: return JSON with http.StatusInternalServerError
-//     c. If successful: return JSON with http.StatusOK and the todos slice
-func GetTodos(db *gorm.DB, Logger *zap.Logger) gin.HandlerFunc {
-	return func(ctx *gin.Context) {
-		var todos []models.Todo
-		if err := db.Find(&todos).Error; err != nil {
-			Logger.Error("Failed to find database", zap.Error(err))
-			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Cabbit fetch the db"})
-			return
-		}
-		Logger.Info("Successfully fetched todos", zap.Int("count", len(todos)))
-		ctx.JSON(http.StatusOK, todos)
+// CreateTodoRequest 定義了創建 Todo 時前端需要傳來的數據格式 (DTO)
+// 我們把 DTO 和 Model 分開，這樣更安全
+type CreateTodoRequest struct {
+	Title string `json:"title" binding:"required,min=3"` // 必須且至少3個字
+}
 
+// Create 現在變成了 TodoHandler 的方法 (Method)
+// 我們可以透過 h.DB 和 h.Logger 來訪問依賴
+func (h *TodoHandler) Create(c *gin.Context) {
+	// 1. 綁定數據到 DTO
+	var req CreateTodoRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.Logger.Warn("Invalid create todo request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
+
+	h.Logger.Info("Creating new todo", zap.String("title", req.Title))
+
+	// 2. 轉換 DTO -> Model
+	todo := models.Todo{
+		Title:  req.Title,
+		Status: "pending", // 預設值
+	}
+
+	// 3. 存入數據庫 (使用 Context!)
+	// h.DB 就是我們注入進來的 GORM 實例
+	if err := h.DB.WithContext(c.Request.Context()).Create(&todo).Error; err != nil {
+		h.Logger.Error("Failed to save todo to DB", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create todo"})
+		return
+	}
+
+	h.Logger.Info("Todo created successfully", zap.Uint("id", todo.ID))
+	c.JSON(http.StatusCreated, todo)
+}
+
+// GetList 也是 TodoHandler 的方法
+func (h *TodoHandler) GetList(c *gin.Context) {
+	var todos []models.Todo
+
+	// 使用 Context 查詢
+	if err := h.DB.WithContext(c.Request.Context()).Find(&todos).Error; err != nil {
+		h.Logger.Error("Failed to fetch todos", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch todos"})
+		return
+	}
+
+	h.Logger.Info("Todos fetched", zap.Int("count", len(todos)))
+	c.JSON(http.StatusOK, todos)
 }
