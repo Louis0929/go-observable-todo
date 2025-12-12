@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/your-username/go-observable-todo/internal/models"
@@ -26,6 +27,7 @@ type TodoHandler struct {
 	DB       *gorm.DB
 	Logger   *zap.Logger
 	JobQueue chan Job // Worker Pool 隊列
+	wg       sync.WaitGroup
 }
 
 // NewTodoHandler 是一個構造函數 (Constructor)
@@ -39,19 +41,32 @@ func NewTodoHandler(db *gorm.DB, logger *zap.Logger) *TodoHandler {
 
 	// 啟動 3 個 Worker
 	for i := 0; i < 3; i++ {
+		h.wg.Add(1) // 登記 Worker
 		go h.worker(i)
 	}
 
 	return h
 }
 
+// Shutdown 優雅關閉 Worker Pool
+// 1. 關閉 Channel (不再接新單)
+// 2. 等待所有 Worker 把手上的單做完
+func (h *TodoHandler) Shutdown() {
+	h.Logger.Info("Stopping workers...")
+	close(h.JobQueue) // 關閉隊列，這會讓 worker 的 range 迴圈結束
+	h.wg.Wait()       // 等待所有 worker 下班
+	h.Logger.Info("All workers stopped")
+}
+
 // worker 是背景工作者，負責消費 JobQueue
 func (h *TodoHandler) worker(id int) {
+	defer h.wg.Done() // 下班打卡
 	h.Logger.Info("Worker started", zap.Int("worker_id", id))
 
 	for job := range h.JobQueue {
 		h.processJob(id, job)
 	}
+	h.Logger.Info("Worker stopped", zap.Int("worker_id", id))
 }
 
 // processJob 處理單個任務邏輯

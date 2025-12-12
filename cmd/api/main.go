@@ -15,6 +15,11 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -120,13 +125,39 @@ func main() {
 	// This will expose Go runtime metrics and custom metrics.
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
-	// TODO: Step 5 - Start the HTTP server
-	// Log a message saying the server is starting
-	// Use router.Run(":8080") to start on port 8080
-	// Handle the error with log.Fatal() if it fails to start
-	logger.Info("Starting server on :8080...")
-	if err := router.Run(":8080"); err != nil {
-		log.Fatal("failed to start server:", err)
+	// TODO: Step 5 - Start the HTTP server (With Graceful Shutdown)
+	srv := &http.Server{
+		Addr:    ":8080",
+		Handler: router,
 	}
+
+	// 在背景啟動 Server
+	go func() {
+		logger.Info("Starting server on :8080...")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal("Failed to start server", zap.Error(err))
+		}
+	}()
+
+	// 監聽中斷信號
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit // 阻塞直到收到信號
+	logger.Info("Shutting down server...")
+
+	// 創建一個 5 秒超時的 Context 進行關閉
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 1. 先關閉 HTTP Server (不接新客)
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Fatal("Server forced to shutdown", zap.Error(err))
+	}
+
+	// 2. 再關閉 Worker Pool (把舊客處理完)
+	logger.Info("Waiting for workers to finish...")
+	todoHandler.Shutdown()
+
+	logger.Info("Server exited properly")
 
 }
