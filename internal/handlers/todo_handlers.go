@@ -14,19 +14,75 @@ import (
 	"gorm.io/gorm"
 )
 
+// Job 定義背景任務的結構
+type Job struct {
+	Ctx  context.Context
+	Todo models.Todo
+}
+
 // TodoHandler 是一個結構體，用來持有 Handler 所需的依賴 (Dependencies)
 // 這就是 "Dependency Injection" 的容器
 type TodoHandler struct {
-	DB     *gorm.DB
-	Logger *zap.Logger
+	DB       *gorm.DB
+	Logger   *zap.Logger
+	JobQueue chan Job // Worker Pool 隊列
 }
 
 // NewTodoHandler 是一個構造函數 (Constructor)
 // 用來創建一個 TodoHandler 實例
 func NewTodoHandler(db *gorm.DB, logger *zap.Logger) *TodoHandler {
-	return &TodoHandler{
-		DB:     db,
-		Logger: logger,
+	h := &TodoHandler{
+		DB:       db,
+		Logger:   logger,
+		JobQueue: make(chan Job, 100), // Buffer=100 的任務隊列
+	}
+
+	// 啟動 3 個 Worker
+	for i := 0; i < 3; i++ {
+		go h.worker(i)
+	}
+
+	return h
+}
+
+// worker 是背景工作者，負責消費 JobQueue
+func (h *TodoHandler) worker(id int) {
+	h.Logger.Info("Worker started", zap.Int("worker_id", id))
+
+	for job := range h.JobQueue {
+		h.processJob(id, job)
+	}
+}
+
+// processJob 處理單個任務邏輯
+func (h *TodoHandler) processJob(workerID int, job Job) {
+	// 重新啟動一個新的 Span (因為我們在新的 goroutine 中)
+	tracer := otel.Tracer("todo-handler")
+	// 使用 job.Ctx (它已經包含了 Trace ID)
+	ctx, span := tracer.Start(job.Ctx, "background_job")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("todo.title", job.Todo.Title),
+		attribute.String("job.type", "async_creation"),
+		attribute.Int("worker.id", workerID),
+	)
+
+	h.Logger.Info("Background job processing",
+		zap.Int("worker_id", workerID),
+		zap.String("title", job.Todo.Title),
+	)
+
+	// 嘗試寫入 DB
+	if err := h.DB.WithContext(ctx).Create(&job.Todo).Error; err != nil {
+		h.Logger.Error("Background job failed", zap.Error(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	} else {
+		h.Logger.Info("Background job finished",
+			zap.Int("worker_id", workerID),
+			zap.Uint("id", job.Todo.ID),
+		)
 	}
 }
 
@@ -64,36 +120,27 @@ func (h *TodoHandler) Create(c *gin.Context) {
 	span := trace.SpanFromContext(c.Request.Context())
 	traceContext := trace.ContextWithSpanContext(context.Background(), span.SpanContext())
 
-	go func(ctx context.Context, t models.Todo) {
-		// 重新啟動一個新的 Span，並指明它 "Links" 到原本的 Request
-		tracer := otel.Tracer("todo-handler")
-		ctx, span := tracer.Start(ctx, "background_job", trace.WithLinks(trace.LinkFromContext(c.Request.Context())))
-		defer span.End()
+	// 封裝任務
+	job := Job{
+		Ctx:  traceContext,
+		Todo: todo,
+	}
 
-		// 增加 Trace Attributes，讓 Jaeger 更好看
-		span.SetAttributes(
-			attribute.String("todo.title", t.Title),
-			attribute.String("job.type", "async_creation"),
-		)
-
-		h.Logger.Info("Background job started", zap.String("title", t.Title))
-
-		// 嘗試寫入 DB
-		// 現在 ctx 是獨立的 context.Background() + Trace Info，不會被 Cancel
-		if err := h.DB.WithContext(ctx).Create(&t).Error; err != nil {
-			h.Logger.Error("Background job failed", zap.Error(err))
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-		} else {
-			h.Logger.Info("Background job finished", zap.Uint("id", t.ID))
-		}
-	}(traceContext, todo)
-
-	// 4. 快速回應
-	c.JSON(http.StatusAccepted, gin.H{
-		"status":  "queued",
-		"message": "Todo creation is being processed in background",
-	})
+	// 4. 嘗試丟進隊列 (Backpressure 保護)
+	select {
+	case h.JobQueue <- job:
+		h.Logger.Info("Job queued successfully", zap.String("title", todo.Title))
+		c.JSON(http.StatusAccepted, gin.H{
+			"status":  "queued",
+			"message": "Todo creation is being processed in background",
+		})
+	default:
+		// 隊列滿了！這就是 Backpressure (背壓) 保護
+		h.Logger.Warn("Job queue full, rejecting request", zap.String("title", todo.Title))
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": "Server is busy, please try again later",
+		})
+	}
 }
 
 // GetList 也是 TodoHandler 的方法
