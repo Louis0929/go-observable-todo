@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  # 1. Jaeger: 負責接收和展示 Tracing 數據 (分佈式追蹤)
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: jaeger
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    ports:
+      - "16686:16686" # Jaeger UI (瀏覽器看這裡)
+      - "4317:4317"   # OTLP gRPC 接收端口
+      - "4318:4318"   # OTLP HTTP 接收端口 (你的 Go App 用這個)
+      - "5778:5778"   # Config
+      - "14268:14268" # Collector HTTP
+    restart: unless-stopped
+
+  # 2. Prometheus: 負責收集 Metrics (數據指標)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml # 掛載我們剛寫的設定檔
+    ports:
+      - "9090:9090" # Prometheus UI
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # 允許訪問宿主機網絡
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    restart: unless-stopped
+

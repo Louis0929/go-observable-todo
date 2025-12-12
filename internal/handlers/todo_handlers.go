@@ -1,10 +1,15 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/your-username/go-observable-todo/internal/models"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -50,16 +55,45 @@ func (h *TodoHandler) Create(c *gin.Context) {
 		Status: "pending", // 預設值
 	}
 
-	// 3. 存入數據庫 (使用 Context!)
-	// h.DB 就是我們注入進來的 GORM 實例
-	if err := h.DB.WithContext(c.Request.Context()).Create(&todo).Error; err != nil {
-		h.Logger.Error("Failed to save todo to DB", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create todo"})
-		return
-	}
+	// 3. 模擬非同步處理 (Asynchronous Processing)
+	// 場景：我們想快速回應用戶 202 Accepted，然後在背景寫入 DB
 
-	h.Logger.Info("Todo created successfully", zap.Uint("id", todo.ID))
-	c.JSON(http.StatusCreated, todo)
+	// FIX: 創建一個全新的 Background Context，避免被 HTTP Request Cancel
+	// 但是！我們提取原始 Context 中的 Trace Span，作為 Link 加入新 Context
+	// 這樣我們既能保持異步執行，又能讓 Jaeger 串連起這兩個 Span
+	span := trace.SpanFromContext(c.Request.Context())
+	traceContext := trace.ContextWithSpanContext(context.Background(), span.SpanContext())
+
+	go func(ctx context.Context, t models.Todo) {
+		// 重新啟動一個新的 Span，並指明它 "Links" 到原本的 Request
+		tracer := otel.Tracer("todo-handler")
+		ctx, span := tracer.Start(ctx, "background_job", trace.WithLinks(trace.LinkFromContext(c.Request.Context())))
+		defer span.End()
+
+		// 增加 Trace Attributes，讓 Jaeger 更好看
+		span.SetAttributes(
+			attribute.String("todo.title", t.Title),
+			attribute.String("job.type", "async_creation"),
+		)
+
+		h.Logger.Info("Background job started", zap.String("title", t.Title))
+
+		// 嘗試寫入 DB
+		// 現在 ctx 是獨立的 context.Background() + Trace Info，不會被 Cancel
+		if err := h.DB.WithContext(ctx).Create(&t).Error; err != nil {
+			h.Logger.Error("Background job failed", zap.Error(err))
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		} else {
+			h.Logger.Info("Background job finished", zap.Uint("id", t.ID))
+		}
+	}(traceContext, todo)
+
+	// 4. 快速回應
+	c.JSON(http.StatusAccepted, gin.H{
+		"status":  "queued",
+		"message": "Todo creation is being processed in background",
+	})
 }
 
 // GetList 也是 TodoHandler 的方法

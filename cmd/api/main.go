@@ -29,6 +29,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/plugin/opentelemetry/tracing"
 )
 
 // initTracer initializes OpenTelemetry tracing and sets the service name.
@@ -79,6 +80,9 @@ func main() {
 	if err != nil {
 		log.Fatal("failed to connect to database", zap.Error(err))
 	}
+	if err := db.Use(tracing.NewPlugin()); err != nil {
+		panic(err)
+	}
 
 	// TODO: Step 2 - Auto-migrate the database schema
 	// Use db.AutoMigrate() with a pointer to models.Todo struct
@@ -96,7 +100,7 @@ func main() {
 	// ==========================================================
 	// Step 4: 使用新的 Handler Struct 和 API Grouping
 	// ==========================================================
-	
+
 	// 1. 初始化 Handler (依賴注入)
 	todoHandler := handlers.NewTodoHandler(db, logger)
 

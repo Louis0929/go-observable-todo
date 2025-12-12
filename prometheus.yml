@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s # 每 5 秒抓一次數據 (測試用，生產環境通常 15s 或更長)
+
+scrape_configs:
+  - job_name: 'go-observable-todo'
+    metrics_path: '/metrics'
+    static_configs:
+      # host.docker.internal 讓 Docker 容器內的 Prometheus 能訪問你本機(Windows)跑的 Go App
+      - targets: ['host.docker.internal:8080'] 
+
