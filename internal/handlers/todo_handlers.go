@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/your-username/go-observable-todo/internal/models"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -14,6 +16,34 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
+
+// 定義 Prometheus 指標
+var (
+	// 計數器：記錄收到的 Todo 請求總數
+	todoRequests = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "todo_requests_total",
+			Help: "Total number of todo creation requests",
+		},
+		[]string{"status"}, // "accepted", "rejected"
+	)
+
+	// 直方圖：記錄 Worker 處理任務的耗時
+	jobDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "todo_processing_seconds",
+			Help:    "Time spent processing todo jobs",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"status"}, // "success", "failed"
+	)
+)
+
+// 初始化時註冊指標
+func init() {
+	prometheus.MustRegister(todoRequests)
+	prometheus.MustRegister(jobDuration)
+}
 
 // Job 定義背景任務的結構
 type Job struct {
@@ -71,6 +101,8 @@ func (h *TodoHandler) worker(id int) {
 
 // processJob 處理單個任務邏輯
 func (h *TodoHandler) processJob(workerID int, job Job) {
+	startTime := time.Now() // [Metrics] 開始計時
+
 	// 重新啟動一個新的 Span (因為我們在新的 goroutine 中)
 	tracer := otel.Tracer("todo-handler")
 	// 使用 job.Ctx (它已經包含了 Trace ID)
@@ -93,11 +125,17 @@ func (h *TodoHandler) processJob(workerID int, job Job) {
 		h.Logger.Error("Background job failed", zap.Error(err))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
+
+		// [Metrics] 記錄失敗耗時
+		jobDuration.WithLabelValues("failed").Observe(time.Since(startTime).Seconds())
 	} else {
 		h.Logger.Info("Background job finished",
 			zap.Int("worker_id", workerID),
 			zap.Uint("id", job.Todo.ID),
 		)
+
+		// [Metrics] 記錄成功耗時
+		jobDuration.WithLabelValues("success").Observe(time.Since(startTime).Seconds())
 	}
 }
 
@@ -123,7 +161,7 @@ func (h *TodoHandler) Create(c *gin.Context) {
 	// 2. 轉換 DTO -> Model
 	todo := models.Todo{
 		Title:  req.Title,
-		Status: "pending", // 預設值
+		Status: "pe給vnding", // 預設值
 	}
 
 	// 3. 模擬非同步處理 (Asynchronous Processing)
@@ -144,12 +182,18 @@ func (h *TodoHandler) Create(c *gin.Context) {
 	// 4. 嘗試丟進隊列 (Backpressure 保護)
 	select {
 	case h.JobQueue <- job:
+		// [Metrics] 記錄成功排隊
+		todoRequests.WithLabelValues("accepted").Inc()
+
 		h.Logger.Info("Job queued successfully", zap.String("title", todo.Title))
 		c.JSON(http.StatusAccepted, gin.H{
 			"status":  "queued",
 			"message": "Todo creation is being processed in background",
 		})
 	default:
+		// [Metrics] 記錄被拒絕
+		todoRequests.WithLabelValues("rejected").Inc()
+
 		// 隊列滿了！這就是 Backpressure (背壓) 保護
 		h.Logger.Warn("Job queue full, rejecting request", zap.String("title", todo.Title))
 		c.JSON(http.StatusServiceUnavailable, gin.H{

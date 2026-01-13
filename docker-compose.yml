@@ -29,3 +29,19 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
     restart: unless-stopped
 
+  # 3. Grafana: 負責把 Prometheus 的數據畫成漂亮的圖表
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000" # 瀏覽器訪問 localhost:3000
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin # 方便登入，預設帳號 admin
+    volumes:
+      - grafana-storage:/var/lib/grafana # 持久化保存你的 Dashboard
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  grafana-storage:
