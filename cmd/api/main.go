@@ -115,6 +115,8 @@ func main() {
 		// 3. 註冊路由
 		v1.POST("/todos", todoHandler.Create)
 		v1.GET("/todos", todoHandler.GetList)
+		v1.PUT("/todos/:id", todoHandler.Update)    // 新增: Update
+		v1.DELETE("/todos/:id", todoHandler.Delete) // 新增: Delete
 	}
 
 	// ==========================================================

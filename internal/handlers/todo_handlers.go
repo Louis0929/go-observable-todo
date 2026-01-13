@@ -216,3 +216,44 @@ func (h *TodoHandler) GetList(c *gin.Context) {
 	h.Logger.Info("Todos fetched", zap.Int("count", len(todos)))
 	c.JSON(http.StatusOK, todos)
 }
+
+// Update 處理更新 Todo
+func (h *TodoHandler) Update(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		Title  string `json:"title"`
+		Status string `json:"status"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var todo models.Todo
+	if err := h.DB.WithContext(c.Request.Context()).First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+
+	// 只更新有值的欄位
+	if req.Title != "" {
+		todo.Title = req.Title
+	}
+	if req.Status != "" {
+		todo.Status = req.Status
+	}
+
+	h.DB.Save(&todo)
+	c.JSON(http.StatusOK, todo)
+}
+
+// Delete 處理刪除 Todo (Soft Delete)
+func (h *TodoHandler) Delete(c *gin.Context) {
+	id := c.Param("id")
+	if err := h.DB.WithContext(c.Request.Context()).Delete(&models.Todo{}, id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete todo"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Todo deleted"})
+}
