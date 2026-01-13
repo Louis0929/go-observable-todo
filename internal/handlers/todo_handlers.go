@@ -161,7 +161,7 @@ func (h *TodoHandler) Create(c *gin.Context) {
 	// 2. 轉換 DTO -> Model
 	todo := models.Todo{
 		Title:  req.Title,
-		Status: "pe給vnding", // 預設值
+		Status: "pending", // 預設值
 	}
 
 	// 3. 模擬非同步處理 (Asynchronous Processing)

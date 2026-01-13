@@ -25,34 +25,59 @@ This command starts the API server on `http://localhost:8080`.
 go run ./cmd/api/main.go
 ```
 
-### 3. Run Jaeger for Tracing
-To view the distributed traces, you need to run a Jaeger instance. The simplest way is using Docker.
+### 3. Run Observability Stack (Jaeger, Prometheus, Grafana)
+We use Docker Compose to spin up all observability tools at once.
 ```bash
-docker run -d --name jaeger \
-  -e COLLECTOR_OTLP_ENABLED=true \
-  -p 16686:16686 \
-  -p 4318:4318 \
-  jaegertracing/all-in-one:latest
+docker-compose up -d
 ```
+This will start:
+- **Jaeger** (Tracing): http://localhost:16686
+- **Prometheus** (Metrics): http://localhost:9090
+- **Grafana** (Dashboards): http://localhost:3000 (User: `admin`, Password: `admin`)
 
 ## Available API Endpoints
 
-### Create a To-Do
+> **Note**: All API endpoints are prefixed with `/api/v1`.
 
-- **Endpoint**: `POST /todos`
-- **Description**: Creates a new to-do item.
+### Create a To-Do (Async)
+
+- **Endpoint**: `POST /api/v1/todos`
+- **Description**: Submits a request to create a new to-do item. This is processed asynchronously.
 - **Body** (JSON):
   ```json
   {
-      "title": "Learn Observability",
-      "status": "pending"
+      "title": "Learn Observability"
+  }
+  ```
+- **Response** (202 Accepted):
+  ```json
+  {
+      "status": "queued",
+      "message": "Todo creation is being processed in background"
   }
   ```
 
 ### Get All To-Dos
 
-- **Endpoint**: `GET /todos`
+- **Endpoint**: `GET /api/v1/todos`
 - **Description**: Retrieves a list of all to-do items.
+
+### Update a To-Do
+
+- **Endpoint**: `PUT /api/v1/todos/:id`
+- **Description**: Updates an existing to-do item.
+- **Body** (JSON):
+  ```json
+  {
+      "title": "Updated Title",
+      "status": "completed"
+  }
+  ```
+
+### Delete a To-Do
+
+- **Endpoint**: `DELETE /api/v1/todos/:id`
+- **Description**: Soft deletes a to-do item.
 
 ## Observability Endpoints
 
